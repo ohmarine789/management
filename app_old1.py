@@ -11,16 +11,19 @@ def get_connection():
 def init_db():
     conn = get_connection()
     c = conn.cursor()
+    # 고객 테이블
     c.execute('''CREATE TABLE IF NOT EXISTS customers 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, 
                   name TEXT, phone TEXT, birth TEXT, address TEXT, 
                   size TEXT, notes TEXT, join_date TEXT, points INTEGER)''')
+    # 판매 테이블
     c.execute('''CREATE TABLE IF NOT EXISTS sales 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, customer_id INTEGER, type TEXT, location TEXT, 
                   sale_date TEXT, item_name TEXT, item_code TEXT, spec TEXT, unit TEXT,
                   unit_price INTEGER, quantity INTEGER, supply_value INTEGER, tax INTEGER,
                   sale_amount INTEGER, add_amount INTEGER, discount_amount INTEGER, total_amount INTEGER,
                   payment_method TEXT, remarks TEXT)''')
+    # 수선 테이블
     c.execute('''CREATE TABLE IF NOT EXISTS repairs 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, customer_id INTEGER, 
                   reg_date TEXT, item_code TEXT, item_name TEXT, color TEXT, phone TEXT, 
@@ -48,16 +51,14 @@ def add_transaction(c_id, t_data):
     c.execute("UPDATE customers SET points = points + ? WHERE id = ?", (int(t_data['total_amount'] * adj), c_id))
     conn.commit(); conn.close(); sync_to_csv()
 
-# [수정] 일괄 삭제 로직 (판매)
-def delete_multiple_transactions(sale_ids):
+def delete_transaction(sale_id):
     conn = get_connection(); c = conn.cursor()
-    for s_id in sale_ids:
-        c.execute("SELECT customer_id, total_amount, type FROM sales WHERE id = ?", (s_id,))
-        sale = c.fetchone()
-        if sale:
-            c_id, amount, t_type = sale; adj = -0.05 if t_type == "판매" else 0.05
-            c.execute("UPDATE customers SET points = points + ? WHERE id = ?", (int(amount * adj), c_id))
-            c.execute("DELETE FROM sales WHERE id = ?", (s_id,))
+    c.execute("SELECT customer_id, total_amount, type FROM sales WHERE id = ?", (sale_id,))
+    sale = c.fetchone()
+    if sale:
+        c_id, amount, t_type = sale; adj = -0.05 if t_type == "판매" else 0.05
+        c.execute("UPDATE customers SET points = points + ? WHERE id = ?", (int(amount * adj), c_id))
+        c.execute("DELETE FROM sales WHERE id = ?", (sale_id,))
     conn.commit(); conn.close(); sync_to_csv()
 
 def add_repair(c_id, r_data):
@@ -65,10 +66,9 @@ def add_repair(c_id, r_data):
     c.execute('''INSERT INTO repairs (customer_id, reg_date, item_code, item_name, color, phone, repair_notes, service_type, cost, payment_method, other_notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (c_id, r_data['reg_date'], r_data['item_code'], r_data['item_name'], r_data['color'], r_data['phone'], r_data['repair_notes'], r_data['service_type'], r_data['cost'], r_data['payment_method'], r_data['other_notes']))
     conn.commit(); conn.close(); sync_to_csv()
 
-# [수정] 일괄 삭제 로직 (수선)
-def delete_multiple_repairs(repair_ids):
+def delete_repair(r_id):
     conn = get_connection(); c = conn.cursor()
-    c.executemany("DELETE FROM repairs WHERE id = ?", [(r_id,) for r_id in repair_ids])
+    c.execute("DELETE FROM repairs WHERE id = ?", (r_id,))
     conn.commit(); conn.close(); sync_to_csv()
 
 def manage_customer(action, c_id=None, data=None):
@@ -78,7 +78,7 @@ def manage_customer(action, c_id=None, data=None):
     elif action == "update":
         c.execute('''UPDATE customers SET name=?, phone=?, birth=?, address=?, size=?, notes=? WHERE id=?''', (data['name'], data['phone'], data['birth'], data['address'], data['size'], data['notes'], c_id))
     elif action == "delete":
-        c.execute("DELETE FROM customers WHERE id=?"); c.execute("DELETE FROM sales WHERE customer_id=?"); c.execute("DELETE FROM repairs WHERE customer_id=?", (c_id, c_id, c_id))
+        c.execute("DELETE FROM customers WHERE id=?", (c_id,)); c.execute("DELETE FROM sales WHERE customer_id=?", (c_id,)); c.execute("DELETE FROM repairs WHERE customer_id=?", (c_id,))
     conn.commit(); conn.close(); sync_to_csv()
 
 # --- 3. UI 렌더링 ---
@@ -110,121 +110,99 @@ def render_integrated_management():
     all_customers = pd.read_sql(query, conn); conn.close()
 
     if not all_customers.empty:
-        h = st.columns([0.5, 1.5, 2, 1, 1.5, 1, 0.5])
-        for col, text in zip(h, ["ID", "이름", "연락처", "사이즈", "포인트", "상세", "DEL"]): col.markdown(f"**{text}**")
+        h = st.columns([0.5, 1.5, 2, 1, 1.5, 1])
+        for col, text in zip(h, ["ID", "이름", "연락처", "사이즈", "포인트", "관리"]): col.markdown(f"**{text}**")
         st.markdown("---")
 
         for _, row in all_customers.iterrows():
-            c1, c2, c3, c4, c5, c6, c7 = st.columns([0.5, 1.5, 2, 1, 1.5, 1, 0.5])
+            c1, c2, c3, c4, c5, c6 = st.columns([0.5, 1.5, 2, 1, 1.5, 1])
             c1.text(row['id']); c2.text(row['name']); c3.text(row['phone']); c4.text(row['size'] if row['size'] else "-"); c5.text(f"{row['points']:,} P")
-            
-            if c6.button("조회", key=f"v_{row['id']}", use_container_width=True): 
-                st.session_state[f"open_{row['id']}"] = not st.session_state.get(f"open_{row['id']}", False)
-            
-            if c7.button("🗑️", key=f"del_c_{row['id']}", help="고객 및 모든 내역 삭제"):
-                manage_customer("delete", c_id=row['id'])
-                st.rerun()
+            if c6.button("조회", key=f"v_{row['id']}", use_container_width=True): st.session_state[f"open_{row['id']}"] = not st.session_state.get(f"open_{row['id']}", False)
 
             if st.session_state.get(f"open_{row['id']}", False):
                 with st.container(border=True):
-                    st.markdown(f"### 👤 {row['name']} 고객 정보")
-                    inf1, inf2, inf3, inf4 = st.columns(4)
-                    inf1.write(f"**ID:** {row['id']}"); inf2.write(f"**연락처:** {row['phone']}"); inf3.write(f"**생일:** {row['birth']}"); inf4.write(f"**가입일:** {row['join_date']}")
-                    inf5, inf6, inf7 = st.columns([1, 2, 1])
-                    inf5.write(f"**사이즈:** {row['size'] if row['size'] else '-'}"); inf6.write(f"**주소:** {row['address'] if row['address'] else '-'}"); inf7.write(f"**포인트:** {row['points']:,} P")
-                    st.info(f"**메모:** {row['notes'] if row['notes'] else '없음'}")
-
-                    t1, t2, t3, t4, t5 = st.tabs(["🛒 판매 등록", "🧵 수선 접수", "📜 판매 내역", "🧵 수선 내역", "⚙️ 정보수정"])
+                    t1, t2, t3, t4 = st.tabs(["🛒 판매 등록", "🧵 수선 접수", "📜 히스토리", "⚙️ 정보수정"])
                     
-                    with t1:
+                    with t1: # 판매 등록
                         with st.form(f"s_form_{row['id']}"):
-                            r1c1, r1c2, r1c3, r1c4 = st.columns(4)
-                            s_date, s_type, s_loc, s_pay = r1c1.date_input("날짜"), r1c2.selectbox("거래구분", ["판매", "반품"]), r1c3.selectbox("판매장소", ["매장", "행사매장"]), r1c4.selectbox("결제수단", ["카드", "현금", "기타"])
-                            r2c1, r2c2, r2c3 = st.columns([2, 1, 1])
-                            s_item, s_code, s_spec = r2c1.text_input("품목명*"), r2c2.text_input("품목코드"), r2c3.text_input("사이즈/규격")
-                            r3c1, r3c2, r3c3, r3c4 = st.columns(4)
-                            s_up, s_qty, s_add, s_disc = r3c1.number_input("단가", min_value=0), r3c2.number_input("수량", min_value=1), r3c3.number_input("추가금액", value=0), r3c4.number_input("할인금액", value=0)
+                            # [요청사항 반영] 구분, 장소, 결제수단을 한 줄에 같은 폼(Selectbox)으로 배치
+                            row1_col1, row1_col2, row1_col3, row1_col4 = st.columns(4)
+                            s_date = row1_col1.date_input("날짜")
+                            s_type = row1_col2.selectbox("거래구분", ["판매", "반품"])
+                            s_loc = row1_col3.selectbox("판매장소", ["매장", "행사매장"])
+                            s_pay = row1_col4.selectbox("결제수단", ["카드", "현금", "기타"])
+
+                            row2_col1, row2_col2, row2_col3 = st.columns([2, 1, 1])
+                            s_item = row2_col1.text_input("품목명*")
+                            s_code = row2_col2.text_input("품목코드")
+                            s_spec = row2_col3.text_input("사이즈/규격")
+
+                            row3_col1, row3_col2, row3_col3, row3_col4 = st.columns(4)
+                            s_up = row3_col1.number_input("단가", min_value=0, step=100)
+                            s_qty = row3_col2.number_input("수량", min_value=1, step=1)
+                            s_add = row3_col3.number_input("추가금액", value=0)
+                            s_disc = row3_col4.number_input("할인금액", value=0)
+                            
                             total = (s_up * s_qty) + s_add - s_disc
-                            st.markdown(f"#### 결제 금액: {total:,}원")
-                            if st.form_submit_button("저장"):
+                            st.markdown(f"### 💰 최종 결제 금액: {total:,}원")
+                            
+                            if st.form_submit_button("판매 내역 저장"):
                                 if s_item:
                                     add_transaction(row['id'], {'type':s_type, 'location':s_loc, 'sale_date':str(s_date), 'item_name':s_item, 'item_code':s_code, 'spec':s_spec, 'unit':'', 'unit_price':s_up, 'quantity':s_qty, 'supply_value':int(total/1.1), 'tax':total-int(total/1.1), 'sale_amount':s_up*s_qty, 'add_amount':s_add, 'discount_amount':s_disc, 'total_amount':total, 'payment_method':s_pay, 'remarks':''})
                                     st.rerun()
 
-                    with t2:
+                    with t2: # 수선 접수
                         with st.form(f"r_form_{row['id']}"):
-                            r1, r2, r3 = st.columns(3); r_date, r_code, r_item = r1.date_input("접수일자"), r2.text_input("품번"), r3.text_input("품명")
-                            r4, r5, r6 = st.columns(3); r_color, r_phone, r_type = r4.text_input("색상"), r5.text_input("연락처", value=row['phone']), r6.selectbox("유/무료", ["무료", "유료"])
-                            r_notes = st.text_input("수선내용")
-                            r7, r8, r9 = st.columns(3); r_cost, r_pay, r_etc = r7.number_input("비용", min_value=0), r8.selectbox("결제", ["미결제", "현금", "카드"]), r9.text_input("기타 메모")
-                            if st.form_submit_button("저장"):
+                            r1, r2, r3 = st.columns(3); r_date = r1.date_input("접수일자"); r_code = r2.text_input("품번"); r_item = r3.text_input("품명")
+                            r4, r5, r6 = st.columns(3); r_color = r4.text_input("색상"); r_phone = r5.text_input("연락처", value=row['phone']); r_type = r6.selectbox("유료/무료", ["무료", "유료"])
+                            r_notes = st.text_input("수선내용 (예: 밑단 줄임)")
+                            r7, r8, r9 = st.columns(3); r_cost = r7.number_input("수선비용", min_value=0); r_pay = r8.selectbox("수선비 결제", ["미결제", "현금", "카드"]); r_etc = r9.text_input("기타 메모")
+                            if st.form_submit_button("수선 내역 저장"):
                                 add_repair(row['id'], {'reg_date':str(r_date), 'item_code':r_code, 'item_name':r_item, 'color':r_color, 'phone':r_phone, 'repair_notes':r_notes, 'service_type':r_type, 'cost':r_cost, 'payment_method':r_pay, 'other_notes':r_etc})
                                 st.rerun()
 
-                    with t3: # 판매 내역 (일괄 삭제 적용)
-                        st.subheader("🛒 전체 판매 내역")
+                    with t3: # 히스토리
+                        st.subheader("🛒 판매 및 🧵 수선 내역")
                         conn = get_connection()
-                        s_hist = pd.read_sql(f"SELECT * FROM sales WHERE customer_id = {row['id']} ORDER BY sale_date DESC", conn)
+                        s_hist = pd.read_sql(f"SELECT id, sale_date, item_name, total_amount, payment_method, location FROM sales WHERE customer_id = {row['id']} ORDER BY sale_date DESC", conn)
+                        r_hist = pd.read_sql(f"SELECT id, reg_date, item_name, repair_notes, cost, payment_method FROM repairs WHERE customer_id = {row['id']} ORDER BY reg_date DESC", conn)
                         conn.close()
+                        
                         if not s_hist.empty:
-                            st.caption("표에서 삭제할 행을 선택한 후 아래 삭제 버튼을 누르세요.")
-                            event = st.dataframe(
-                                s_hist.drop(columns=['customer_id']), 
-                                use_container_width=True, 
-                                hide_index=True, 
-                                on_select="rerun", 
-                                selection_mode="multi-row"  # 'multi-row'로 변경
-                            )  
-                            sel_rows = event.selection.rows
-                            if sel_rows:
-                                sel_ids = s_hist.iloc[sel_rows]['id'].tolist()
-                                if st.button(f"🗑️ 선택한 {len(sel_ids)}건 삭제", key=f"del_s_{row['id']}", type="primary"):
-                                    delete_multiple_transactions(sel_ids); st.rerun()
-                        else: st.info("판매 내역이 없습니다.")
-
-                    with t4: # 수선 내역 (일괄 삭제 적용)
-                        st.subheader("🧵 전체 수선 내역")
-                        conn = get_connection()
-                        r_hist = pd.read_sql(f"SELECT * FROM repairs WHERE customer_id = {row['id']} ORDER BY reg_date DESC", conn)
-                        conn.close()
+                            st.write("**[판매 기록]**")
+                            for _, sr in s_hist.iterrows():
+                                sc1, sc2, sc3, sc4, sc5 = st.columns([2, 3, 2, 1.5, 1])
+                                sc1.text(sr['sale_date']); sc2.text(sr['item_name']); sc3.text(f"{sr['total_amount']:,}원"); sc4.text(f"{sr['location']}/{sr['payment_method']}")
+                                if sc5.button("삭제", key=f"ds_{sr['id']}"): delete_transaction(sr['id']); st.rerun()
+                        
                         if not r_hist.empty:
-                            st.caption("표에서 삭제할 행을 선택한 후 아래 삭제 버튼을 누르세요.")
-                            event_r = st.dataframe(
-                                r_hist.drop(columns=['customer_id']), 
-                                use_container_width=True, 
-                                hide_index=True, 
-                                on_select="rerun", 
-                                selection_mode="multi-row"  # 'multi-row'로 변경
-                            )
-                            sel_rows_r = event_r.selection.rows
-                            if sel_rows_r:
-                                sel_ids_r = r_hist.iloc[sel_rows_r]['id'].tolist()
-                                if st.button(f"🗑️ 선택한 {len(sel_ids_r)}건 삭제", key=f"del_r_{row['id']}", type="primary"):
-                                    delete_multiple_repairs(sel_ids_r); st.rerun()
-                        else: st.info("수선 내역이 없습니다.")
+                            st.write("**[수선 기록]**")
+                            for _, rr in r_hist.iterrows():
+                                rc1, rc2, rc3, rc4, rc5 = st.columns([2, 2, 3, 1.5, 1])
+                                rc1.text(rr['reg_date']); rc2.text(rr['item_name']); rc3.text(rr['repair_notes']); rc4.text(f"{rr['cost']:,}원({rr['payment_method']})")
+                                if rc5.button("삭제", key=f"dr_{rr['id']}"): delete_repair(rr['id']); st.rerun()
 
-                    with t5:
+                    with t4: # 정보 수정
                         with st.form(f"e_form_{row['id']}"):
-                            en, ep, ea, es, et = st.text_input("이름", value=row['name']), st.text_input("연락처", value=row['phone']), st.text_input("주소", value=row['address']), st.text_input("사이즈", value=row['size']), st.text_area("메모", value=row['notes'])
-                            if st.form_submit_button("수정"): manage_customer("update", c_id=row['id'], data={'name':en, 'phone':ep, 'birth':row['birth'], 'address':ea, 'size':es, 'notes':et}); st.rerun()
+                            en = st.text_input("이름", value=row['name']); ep = st.text_input("연락처", value=row['phone']); ea = st.text_input("주소", value=row['address']); es = st.text_input("사이즈", value=row['size']); et = st.text_area("메모", value=row['notes'])
+                            if st.form_submit_button("정보 수정 저장"): manage_customer("update", c_id=row['id'], data={'name':en, 'phone':ep, 'birth':row['birth'], 'address':ea, 'size':es, 'notes':et}); st.rerun()
             st.markdown("---")
-    else: st.info("데이터가 없습니다.")
+    else: st.info("고객 데이터가 없습니다.")
 
 def render_dashboard():
     st.header("📊 매출 및 수선 통계")
     if os.path.exists('sales_backup.csv'):
         df = pd.read_csv('sales_backup.csv')
-        if not df.empty:
-            c1, c2, c3 = st.columns(3)
-            c1.metric("총 판매액", f"{int(df[df['type']=='판매']['total_amount'].sum()):,}원")
-            c2.metric("카드 결제 건수", f"{len(df[df['payment_method']=='카드'])}건")
-            c3.metric("현금 결제 건수", f"{len(df[df['payment_method']=='현금'])}건")
-            st.dataframe(df, use_container_width=True)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("총 판매액", f"{int(df[df['type']=='판매']['total_amount'].sum()):,}원")
+        c2.metric("카드 결제 건수", f"{len(df[df['payment_method']=='카드'])}건")
+        c3.metric("현금 결제 건수", f"{len(df[df['payment_method']=='현금'])}건")
+        st.dataframe(df, use_container_width=True)
 
 def main():
     st.set_page_config(page_title="의류 매장 CRM", layout="wide")
     init_db()
-    menu = st.sidebar.selectbox("메뉴 선택", ["통합 관리", "비교 분석"])
+    menu = st.sidebar.radio("메뉴", ["통합 관리", "대시보드"])
     if menu == "통합 관리": render_integrated_management()
     else: render_dashboard()
 
